@@ -307,7 +307,7 @@ fi
 ## Arguments have been checked and directories created. Now begins
 ## the real work of the pipeline
 
-testname=$(ls -l ${fastqdir} | awk 'NR==1{print $9}')
+testname=$(ls ${fastqdir} | awk 'NR==1{print $1}')
 if [ "${testname: -3}" == ".gz" ]
 then
     read1=${splitdir}"/*${read1str}*.fastq.gz"
