@@ -61,9 +61,9 @@
 shopt -s extglob
 export LC_ALL=C
 
-juicer_version="1.5.7" 
+juicer_version="1.5.8" 
 ### LOAD BWA AND SAMTOOLS
-
+# acutally make use of samtools instead of writing sams to disk
 
 # fastq files should look like filename_R1.fastq and filename_R2.fastq 
 # if your fastq files look different, change this value
@@ -382,14 +382,14 @@ then
                 echo "(-: Short align of $name1$ext.sam done successfully"
             fi
         else
-            echo "Running command bwa mem $threadstring $refSeq $name1$ext > $name1$ext.sam" 
-            bwa mem $threadstring $refSeq $name1$ext > $name1$ext.sam
+            echo "Running command bwa mem $threadstring $refSeq $name1$ext > $name1$ext.bam" 
+            bwa mem $threadstring $refSeq $name1$ext | samtools view -bu | samtools sort -n -O BAM -o $name1${ext}_sort.bam -
             if [ $? -ne 0 ]
             then
                 echo "***! Alignment of $name1$ext failed."
                 exit 1
             else                                                            
-		echo "(-:  Align of $name1$ext.sam done successfully"
+		echo "(-:  Align of $name1${ext}_sort.bam done successfully"
             fi                                    
         fi                                                              
         # Align read2
@@ -405,8 +405,8 @@ then
 		echo "(-: Short align of $name2$ext.sam done successfully"
             fi
         else
-            echo "Running command bwa mem $threadstring $refSeq $name2$ext > $name2$ext.sam"
-            bwa mem $threadstring $refSeq $name2$ext > $name2$ext.sam 
+            echo "Running command bwa mem $threadstring $refSeq $name2$ext > $name2$ext.bam"
+            bwa mem $threadstring $refSeq $name2$ext | samtools view -bu | samtools sort -n -O BAM -o $name2${ext}_sort.bam - 
             if [ $? -ne 0 ]
             then
 		echo "***! Alignment of $name2$ext failed."
@@ -416,42 +416,51 @@ then
             fi
 	fi
         # sort read 1 aligned file by readname
-	sort -T $tmpdir -k1,1f $name1$ext.sam > $name1${ext}_sort.sam
-	if [ $? -ne 0 ]
-	then
-            echo "***! Error while sorting $name1$ext.sam"
-            exit 1
-	else
-            echo "(-: Sort read 1 aligned file by readname completed."
-	fi
+	# why not use samtools above to do sorting by read name...
+	#sort -T $tmpdir -k1,1f $name1$ext.sam > $name1${ext}_sort.sam
+	#if [ $? -ne 0 ]
+	#then
+        #    echo "***! Error while sorting $name1$ext.sam"
+        #    exit 1
+	#else
+        #    echo "(-: Sort read 1 aligned file by readname completed."
+	#fi
         # sort read 2 aligned file by readname
-	sort -T $tmpdir -k1,1f $name2$ext.sam > $name2${ext}_sort.sam
-	if [ $? -ne 0 ]
-	then
-            echo "***! Error while sorting $name2$ext.sam"
-            exit 1
-	else
-            echo "(-: Sort read 2 aligned file by readname completed."
-	fi                           
+	#sort -T $tmpdir -k1,1f $name2$ext.sam > $name2${ext}_sort.sam
+	#if [ $? -ne 0 ]
+	#then
+        #    echo "***! Error while sorting $name2$ext.sam"
+        #    exit 1
+	#else
+        #    echo "(-: Sort read 2 aligned file by readname completed."
+	#fi                           
         # add read end indicator to readname
-	awk 'BEGIN{OFS="\t"}NF>=11{$1=$1"/1"; print}' $name1${ext}_sort.sam > $name1${ext}_sort1.sam
-	awk 'BEGIN{OFS="\t"}NF>=11{$1=$1"/2"; print}' $name2${ext}_sort.sam > $name2${ext}_sort1.sam
-    
-	sort -T $tmpdir -k1,1f -m $name1${ext}_sort1.sam $name2${ext}_sort1.sam > ${name}${ext}.sam
-    
+	## Now we need to stream things back to a sam for this awk line...
+	samtools view $name1${ext}_sort.bam | awk 'BEGIN{OFS="\t"}NF>=11{$1=$1"/1"; print}' | samtools view -b - > $name1${ext}_sort1.bam
+	samtools view $name2${ext}_sort.bam | awk 'BEGIN{OFS="\t"}NF>=11{$1=$1"/2"; print}' | samtools view -b - > $name2${ext}_sort1.bam
+        # still confused why we can't just use samtools to do this...
+	#sort -T $tmpdir -k1,1f -m $name1${ext}_sort1.sam $name2${ext}_sort1.sam > ${name}${ext}.sam
+    	# well let's try it...
+	samtools merge -n -O BAM ${name}${ext}.bam $name1${ext}_sort1.bam $name2${ext}_sort1.bam
+
 	if [ $? -ne 0 ]
 	then
             echo "***! Failure during merge of read files"
             exit 1
 	else
-            rm $name1$ext*.sa* $name2$ext*.sa* 
-            echo "(-: $name$ext.sam created successfully."
+            rm $name1$ext*.ba* $name2$ext*.ba* 
+            echo "(-: $name$ext.bam created successfully."
 	fi
     
         # call chimeric_blacklist.awk to deal with chimeric reads; 
         # sorted file is sorted by read name at this point
+	# this is horrific... 
 	touch $name${ext}_abnorm.sam $name${ext}_unmapped.sam
-	awk -v "fname1"=$name${ext}_norm.txt -v "fname2"=$name${ext}_abnorm.sam -v "fname3"=$name${ext}_unmapped.sam -f ${juiceDir}/scripts/common/chimeric_blacklist.awk $name$ext.sam
+	samtools view ${name}${ext}.bam | awk -v "fname1"=$name${ext}_norm.txt -v "fname2"=$name${ext}_abnorm.sam -v "fname3"=$name${ext}_unmapped.sam -f ${juiceDir}/scripts/common/chimeric_blacklist.awk -
+	# send these back to  bam and delete them oh my goodness...
+	samtools view -bu $name${ext}_abnorm.sam | samtools sort -n -O BAM -o $name${ext}_abnorm.bam - && rm $name${ext}_abnorm.sam
+	samtools view -bu $name${ext}_unmapped.sam | samtools sort -n -O BAM -o $name${ext}_unmapped.bam - && rm $name${ext}_unmapped.sam
+
 	if [ $? -ne 0 ]
 	then
             echo "***! Failure during chimera handling of $name${ext}"
@@ -530,9 +539,12 @@ then
     ${juiceDir}/scripts/common/juicer_tools LibraryComplexity $outputdir inter.txt >> $outputdir/inter.txt
     cp $outputdir/inter.txt $outputdir/inter_30.txt 
     ${juiceDir}/scripts/common/statistics.pl -s $site_file -l $ligation -o $outputdir/inter.txt -q 1 $outputdir/merged_nodups.txt 
-    cat $splitdir/*_abnorm.sam > $outputdir/abnormal.sam
-    cat $splitdir/*_unmapped.sam > $outputdir/unmapped.sam
-    awk -f ${juiceDir}/scripts/common/collisions.awk $outputdir/abnormal.sam > $outputdir/collisions.txt
+    # what the actual...
+    samtools merge -n -O BAM $outputdir/abnormal.bam $splitdir/*_abnorm.bam
+    samtools merge -n -O BAM $outputdir/unmapped.bam $splitdir/*_unmapped.bam
+    #cat $splitdir/*_abnorm.sam > $outputdir/abnormal.sam
+    #cat $splitdir/*_unmapped.sam > $outputdir/unmapped.sam
+    samtools view $outputdir/abnormal.sam | awk -f ${juiceDir}/scripts/common/collisions.awk > $outputdir/collisions.txt
     # Collisions dedupping script goes here
 fi
 
